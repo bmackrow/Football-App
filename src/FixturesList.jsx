@@ -10,6 +10,8 @@ export default function FixturesList() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [leagueId, setLeagueId] = useState(39); // Default: Premier League
+  // pubInfo stores lookup results per fixture id
+  const [pubInfo, setPubInfo] = useState({});
   // Store both the fixture id and the pairing message
   const [beerPairing, setBeerPairing] = useState({ fixtureId: null, message: null });
 
@@ -35,7 +37,7 @@ export default function FixturesList() {
     fetchFixtures();
   }, [leagueId]);
 
-  const suggestBeer = (home, away, fixtureId) => {
+  const suggestBeer = (home, away, fixtureId, fixtureVenueName) => {
     // Simple demo logic for pairing beer types
     // Accept fixtureId as an argument
     const beers = [
@@ -54,7 +56,104 @@ export default function FixturesList() {
     });
     console.log('Pair Beer clicked for:', home, 'vs', away, 'fixtureId:', fixtureId);
     console.log('Beer pairing set:', `${home} vs ${away}: Enjoy it with a ${randomBeer}`);
+
+    // start fetching nearest pub info (async fire-and-forget)
+    fetchNearestPub(fixtureId, home, fixtureVenueName).catch((err) => {
+      console.error('Pub lookup failed:', err);
+      setPubInfo((cur) => ({ ...cur, [fixtureId]: { error: 'Failed to find pub', loading: false } }));
+    });
   };
+
+  async function fetchNearestPub(fixtureId, homeTeamName, fixtureVenueName) {
+    // set loading
+    setPubInfo((cur) => ({ ...cur, [fixtureId]: { loading: true } }));
+
+    // Choose a query: prefer venue name if present, otherwise use "<team> stadium"
+    const query = fixtureVenueName && fixtureVenueName.length > 2 ? fixtureVenueName : `${homeTeamName} stadium`;
+
+    // 1) Geocode the stadium/venue using Nominatim
+    const nomUrl = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(query)}&limit=1`;
+    const nomRes = await fetch(nomUrl);
+    const nomJson = await nomRes.json();
+    if (!nomJson || nomJson.length === 0) {
+      // fallback: try searching just the team name
+      const fallbackUrl = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(homeTeamName)}&limit=1`;
+      const fbRes = await fetch(fallbackUrl);
+      const fbJson = await fbRes.json();
+      if (!fbJson || fbJson.length === 0) {
+        throw new Error('Could not geocode stadium or team');
+      }
+      nomJson[0] = fbJson[0];
+    }
+    const lat = parseFloat(nomJson[0].lat);
+    const lon = parseFloat(nomJson[0].lon);
+
+    // 2) Query Overpass for the nearest amenity=pub within 2km
+    const radius = 2000; // meters
+    const overpassQuery = `
+[out:json][timeout:25];
+(node["amenity"="pub"](around:${radius},${lat},${lon});
+ way["amenity"="pub"](around:${radius},${lat},${lon});
+ relation["amenity"="pub"](around:${radius},${lat},${lon});
+);
+ out center 1;`;
+
+    const overpassRes = await fetch('https://overpass-api.de/api/interpreter', {
+      method: 'POST',
+      body: overpassQuery,
+      headers: { 'Content-Type': 'text/plain' },
+    });
+    const overJson = await overpassRes.json();
+    if (!overJson || !overJson.elements || overJson.elements.length === 0) {
+      // No pubs found nearby
+      setPubInfo((cur) => ({ ...cur, [fixtureId]: { loading: false, error: 'No nearby pub found', stadium: { lat, lon } } }));
+      return;
+    }
+
+    // pick the closest element by distance
+    const withCoords = overJson.elements.map((el) => {
+      const elLat = el.lat || (el.center && el.center.lat);
+      const elLon = el.lon || (el.center && el.center.lon);
+      const dx = elLat - lat;
+      const dy = elLon - lon;
+      const dist = dx * dx + dy * dy;
+      return { el, elLat, elLon, dist };
+    }).filter(x => x.elLat && x.elLon).sort((a,b)=>a.dist-b.dist);
+
+    if (withCoords.length === 0) {
+      setPubInfo((cur) => ({ ...cur, [fixtureId]: { loading: false, error: 'No geo data for pubs', stadium: { lat, lon } } }));
+      return;
+    }
+
+    const chosen = withCoords[0];
+    const tags = chosen.el.tags || {};
+    const pubName = tags.name || 'Pub';
+    // build an address from possible tags
+    const parts = [];
+    if (tags['addr:housenumber']) parts.push(tags['addr:housenumber']);
+    if (tags['addr:street']) parts.push(tags['addr:street']);
+    if (tags['addr:city']) parts.push(tags['addr:city']);
+    if (tags['addr:postcode']) parts.push(tags['addr:postcode']);
+    const address = parts.join(', ') || (tags['contact:address'] || tags['address'] || 'Address not available');
+
+    const pubLat = chosen.elLat;
+    const pubLon = chosen.elLon;
+    const osmLink = `https://www.openstreetmap.org/?mlat=${pubLat}&mlon=${pubLon}#map=19/${pubLat}/${pubLon}`;
+    const googleLink = `https://www.google.com/maps/search/?api=1&query=${pubLat},${pubLon}`;
+
+    setPubInfo((cur) => ({
+      ...cur,
+      [fixtureId]: {
+        loading: false,
+        name: pubName,
+        address,
+        lat: pubLat,
+        lon: pubLon,
+        osmLink,
+        googleLink,
+      }
+    }));
+  }
 
   if (loading) return <p className="p-4">Loading fixtures…</p>;
   if (error) return <p className="p-4 text-red-500">{error}</p>;
@@ -106,7 +205,7 @@ export default function FixturesList() {
               <div className="flex flex-col items-end">
                 <button
                   className="bg-yellow-500 text-white px-4 py-2 rounded-xl shadow hover:bg-yellow-600 mb-2"
-                  onClick={() => suggestBeer(teams.home.name, teams.away.name, fixture.id)}
+                  onClick={() => suggestBeer(teams.home.name, teams.away.name, fixture.id, fixture?.venue?.name)}
                 >
                   Pair Beer
                 </button>
@@ -120,7 +219,26 @@ export default function FixturesList() {
                     fontWeight: 'bold',
                     boxShadow: '0 2px 8px rgba(0,0,0,0.10)'
                   }}>
-                    <span role="img" aria-label="beer">🍺</span> {beerPairing.message}
+                    <div style={{display:'flex', alignItems:'center', gap:'0.5rem'}}>
+                      <span role="img" aria-label="beer">🍺</span>
+                      <div>{beerPairing.message}</div>
+                    </div>
+
+                    {/* Pub lookup info */}
+                    <div style={{marginTop: '0.75rem', fontWeight: 'normal', color: '#3f3f3f'}}>
+                      {pubInfo[fixture.id] && pubInfo[fixture.id].loading && <div>Finding nearest pub…</div>}
+                      {pubInfo[fixture.id] && pubInfo[fixture.id].error && <div style={{color:'#9b1c1c'}}>Pub: {pubInfo[fixture.id].error}</div>}
+                      {pubInfo[fixture.id] && !pubInfo[fixture.id].loading && pubInfo[fixture.id].name && (
+                        <div>
+                          <div style={{fontWeight:'600'}}>{pubInfo[fixture.id].name}</div>
+                          <div style={{fontSize:'0.9rem'}}>{pubInfo[fixture.id].address}</div>
+                          <div style={{marginTop:'0.4rem'}}>
+                            <a href={pubInfo[fixture.id].googleLink} target="_blank" rel="noreferrer" style={{marginRight:'0.5rem', color:'#0369a1'}}>Open in Google Maps</a>
+                            <a href={pubInfo[fixture.id].osmLink} target="_blank" rel="noreferrer" style={{color:'#0369a1'}}>Open in OSM</a>
+                          </div>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )}
               </div>

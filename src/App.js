@@ -1,5 +1,12 @@
+import './App.css';
 import FixturesList from './FixturesList';
+
 function App() {
-  return <FixturesList />;
+  return (
+    <div className="App">
+      <FixturesList />
+    </div>
+  );
 }
+
 export default App;
