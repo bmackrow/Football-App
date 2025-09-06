@@ -12,6 +12,8 @@ export default function FixturesList() {
   const [leagueId, setLeagueId] = useState(39); // Default: Premier League
   // Store both the fixture id and the pairing message
   const [beerPairing, setBeerPairing] = useState({ fixtureId: null, message: null });
+  // Track which fixture's button is animating (transient)
+  const [animatingButton, setAnimatingButton] = useState(null);
 
   useEffect(() => {
     async function fetchFixtures() {
@@ -52,6 +54,14 @@ export default function FixturesList() {
       fixtureId: fixtureId,
       message: `${home} vs ${away}: Enjoy it with a ${randomBeer}`
     });
+    // trigger a quick button animation for the clicked fixture
+    setAnimatingButton(fixtureId);
+    // clear animation flag after the animation finishes
+    setTimeout(() => setAnimatingButton((cur) => (cur === fixtureId ? null : cur)), 800);
+    // optionally auto-hide the pairing message after 6s
+    setTimeout(() => {
+      setBeerPairing((cur) => (cur.fixtureId === fixtureId ? { fixtureId: null, message: null } : cur));
+    }, 6000);
     console.log('Pair Beer clicked for:', home, 'vs', away, 'fixtureId:', fixtureId);
     console.log('Beer pairing set:', `${home} vs ${away}: Enjoy it with a ${randomBeer}`);
   };
@@ -61,6 +71,37 @@ export default function FixturesList() {
 
   return (
     <div className="min-h-screen bg-gray-100 p-6">
+      {/* Inline component styles for animations */}
+      <style>{`
+        .btn-pop {
+          animation: pop 420ms cubic-bezier(.2,.9,.2,1);
+        }
+        @keyframes pop {
+          0% { transform: scale(1) rotate(0deg); }
+          40% { transform: scale(1.12) rotate(-6deg); }
+          70% { transform: scale(0.98) rotate(3deg); }
+          100% { transform: scale(1) rotate(0deg); }
+        }
+        .pairing-card {
+          opacity: 0;
+          transform: translateY(-8px) scale(0.995);
+          transition: opacity 280ms ease, transform 280ms ease;
+        }
+        .pairing-card.show {
+          opacity: 1;
+          transform: translateY(0) scale(1);
+        }
+        .beer-emoji { display: inline-block; transform-origin: 50% 50%; }
+        .beer-emoji.bounce {
+          animation: hop 900ms ease;
+        }
+        @keyframes hop {
+          0% { transform: translateY(0) rotate(0deg); }
+          30% { transform: translateY(-8px) rotate(-12deg); }
+          60% { transform: translateY(0) rotate(8deg); }
+          100% { transform: translateY(0) rotate(0deg); }
+        }
+      `}</style>
   <h1 style={{ textAlign: 'center' }} className="text-2xl font-bold mb-4">League Fixtures 2023</h1>
 
       {/* League Filter */}
@@ -105,13 +146,13 @@ export default function FixturesList() {
               </div>
               <div className="flex flex-col items-end">
                 <button
-                  className="bg-yellow-500 text-white px-4 py-2 rounded-xl shadow hover:bg-yellow-600 mb-2"
+                  className={"bg-yellow-500 text-white px-4 py-2 rounded-xl shadow hover:bg-yellow-600 mb-2 " + (animatingButton === fixture.id ? 'btn-pop' : '')}
                   onClick={() => suggestBeer(teams.home.name, teams.away.name, fixture.id)}
                 >
                   Pair Beer
                 </button>
                 {beerPairing.fixtureId === fixture.id && (
-                  <div style={{
+                  <div className={"pairing-card show"} style={{
                     padding: '1rem',
                     border: '4px solid #eab308',
                     background: '#fef9c3',
@@ -120,7 +161,8 @@ export default function FixturesList() {
                     fontWeight: 'bold',
                     boxShadow: '0 2px 8px rgba(0,0,0,0.10)'
                   }}>
-                    <span role="img" aria-label="beer">🍺</span> {beerPairing.message}
+                    <span role="img" aria-label="beer" className={"beer-emoji " + (animatingButton === fixture.id ? 'bounce' : '')}>🍺</span>
+                    <span style={{marginLeft: '0.5rem'}}>{beerPairing.message}</span>
                   </div>
                 )}
               </div>
